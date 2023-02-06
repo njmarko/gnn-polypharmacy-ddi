@@ -127,3 +127,14 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+### VIM
+*~
+*.swp
+*.swo
+
+# This project
+/wandb/
+/.idea/
+/data/decagon/
+**/decagon/*
