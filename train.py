@@ -1,6 +1,10 @@
 import argparse
-import pickle
+import timeit
 
+import torch
+import torch.nn.functional as F
+from torch.testing._internal.common_quantization import AverageMeter
+from tqdm import tqdm
 import wandb
 
 from ddi_dataset import create_ddi_dataloaders
@@ -31,6 +35,9 @@ def main():
     parser.add_argument('-nr', '--train_neg_pos_ratio', type=int, default=1)
     parser.add_argument('-b', '--batch_size', type=int, default=100)
 
+    # Training options
+    parser.add_argument('-e', '--n_epochs', type=int, default=10000, help="Max number of epochs")
+
     # Directory containing precomputed training data split.
     parser.add_argument('-input_data_path', '--input_data_path', default=None,
                         help="Input data path, e.g. ./data/decagon/")
@@ -40,9 +47,48 @@ def main():
 
     opt = parser.parse_args()
 
-    data_loaders = create_ddi_dataloaders(opt)
+    train_loader, val_loader = create_ddi_dataloaders(opt)
 
     wandb.init(entity=opt.entity, project=opt.project_name, group=opt.group, job_type=opt.job_type, config=opt)
+
+    best_val = 0
+    averaged_model = None
+    for epoch in range(opt.n_epochs):
+        train_loss, averaged_model = train(None, train_loader, None, averaged_model, opt)
+
+
+def train(model, data_loader, optimizer, averaged_model, opt):
+    model.train()
+    start_time = timeit.default_timer()
+
+    avg_training_loss = AverageMeter("Train epoch loss avg")
+
+    for batch in tqdm(data_loader, mininterval=5, desc="Training"):
+        optimizer.zero_grad()
+
+        pos_batch, neg_batch, seg_pos_neg = batch
+        pos_batch = [v.to(opt.device) for v in pos_batch]
+        neg_batch = [v.to(opt.device) for v in neg_batch]
+        seg_pos_neg = seg_pos_neg.to(opt.device)
+
+        predictions_pos = model(*pos_batch)
+        predictions_neg = model(*neg_batch)
+        loss = max_margin_loss_fn(predictions_pos, predictions_neg, seg_pos_neg)
+
+        loss.backward()
+        optimizer.step()
+
+        sz_b = seg_pos_neg.size(0)
+        avg_training_loss.update(loss.detach(), sz_b)
+
+    epoch_time = timeit.default_timer() - start_time
+
+    return avg_training_loss.avg, epoch_time, averaged_model
+
+
+def max_margin_loss_fn(pos_eg_score, neg_eg_score, seg_pos_neg, margin=1):
+    pos_eg_score = pos_eg_score.index_select(0, seg_pos_neg)
+    return torch.mean(F.relu(margin - pos_eg_score + neg_eg_score))
 
 
 if __name__ == "__main__":
