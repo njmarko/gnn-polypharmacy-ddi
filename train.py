@@ -1,5 +1,7 @@
 import argparse
+import os
 import timeit
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -75,6 +77,8 @@ def main():
 
     best_val = 0
     averaged_model = model.state_dict()
+    best_val_auroc = -np.inf
+    best_model_path = None
     for epoch in range(opt.n_epochs):
         train_loss, epoch_time, averaged_model = train(model, train_loader, optimizer, averaged_model, opt)
         logging.info(f"  Train loss: {train_loss}, time: {epoch_time}")
@@ -83,11 +87,24 @@ def main():
         # Using average model for validation
         model.load_state_dict(averaged_model)
 
-        valid_perf, val_time = validate(model, val_loader, opt)
+        val_metrics, val_time = validate(model, val_loader, opt)
 
-        wandb.log({"validation_performance": valid_perf})
+        wandb.log({"validation_performance": val_metrics})
 
-        logging.info(f"  Validation: {valid_perf['auroc']:.4f}, time: {val_time}")
+        logging.info(f"  Validation: {val_metrics['auroc']:.4f}, time: {val_time}")
+
+        if val_metrics['auroc'] > best_val_auroc:
+            best_val_auroc = val_metrics['auroc']
+            Path(f'experiments/{opt.group}').mkdir(exist_ok=True)
+            new_best_path = os.path.join(f'experiments/{opt.group}',
+                                         f'train-{opt.group}-epoch{epoch}'
+                                         f'-metric{val_metrics["auroc"]:.4f}.pt')
+            torch.save({'global_step': opt.global_step,
+                        'model': averaged_model,
+                        'threshold': val_metrics['threshold']}, new_best_path)
+            if best_model_path:
+                os.remove(best_model_path)
+            best_model_path = new_best_path
 
         model.load_state_dict(training_model)
 
@@ -149,25 +166,25 @@ def validate(model, data_loader, opt):
             score += [batch_score]
             seidx += [batch[-2]]
 
-        label = np.hstack(label)
-        score = np.hstack([s.cpu() for s in score])
-        seidx = np.hstack([s.cpu() for s in seidx])
+    label = np.hstack(label)
+    score = np.hstack([s.cpu() for s in score])
+    seidx = np.hstack([s.cpu() for s in seidx])
 
-        threshold = get_optimal_thresholds_for_rels(seidx, label, score)
-        instance_threshold = threshold[seidx]
+    threshold = get_optimal_thresholds_for_rels(seidx, label, score)
+    instance_threshold = threshold[seidx]
 
-        pred = score > instance_threshold
+    pred = score > instance_threshold
 
-        performance = {
-            'auroc': metrics.roc_auc_score(label, score),
-            'avg_p': metrics.average_precision_score(label, score),
-            'f1': metrics.f1_score(label, pred, average='binary'),
-            'p': metrics.precision_score(label, pred, average='binary'),
-            'r': metrics.recall_score(label, pred, average='binary'),
-            'threshold': threshold
-        }
-        epoch_time = timeit.default_timer() - start_time
-        return performance, epoch_time
+    performance = {
+        'auroc': metrics.roc_auc_score(label, score),
+        'avg_p': metrics.average_precision_score(label, score),
+        'f1': metrics.f1_score(label, pred, average='binary'),
+        'p': metrics.precision_score(label, pred, average='binary'),
+        'r': metrics.recall_score(label, pred, average='binary'),
+        'threshold': threshold
+    }
+    epoch_time = timeit.default_timer() - start_time
+    return performance, epoch_time
 
 
 def max_margin_loss_fn(pos_eg_score, neg_eg_score, seg_pos_neg, margin=1):
