@@ -7,6 +7,7 @@ from torch.testing._internal.common_quantization import AverageMeter
 import torch.optim as optim
 from tqdm import tqdm
 import wandb
+import logging
 
 from ddi_dataset import create_ddi_dataloaders
 from model.GNNModel import GraphTransformer
@@ -45,6 +46,7 @@ def main():
 
     parser.add_argument('-l2', '--l2_lambda', type=float, default=0)
     parser.add_argument('-drop', '--dropout', type=float, default=0.1)
+    parser.add_argument('-global_step', '--global_step', type=int, default=0)
 
     # Directory containing precomputed training data split.
     parser.add_argument('-input_data_path', '--input_data_path', default=None,
@@ -55,6 +57,7 @@ def main():
 
     opt = parser.parse_args()
     opt.device = 'cuda' if torch.cuda.is_available() and (opt.device == 'cuda') else 'cpu'
+    print(opt.device)
 
     train_loader, val_loader = create_ddi_dataloaders(opt)
 
@@ -67,8 +70,6 @@ def main():
         model.parameters(), lr=opt.learning_rate, weight_decay=opt.l2_lambda)
 
     wandb.init(entity=opt.entity, project=opt.project_name, group=opt.group, job_type=opt.job_type, config=opt)
-
-
 
     best_val = 0
     averaged_model = None
@@ -85,6 +86,11 @@ def train(model, data_loader, optimizer, averaged_model, opt):
     for batch in tqdm(data_loader, mininterval=5, desc="Training"):
         optimizer.zero_grad()
 
+        # Custom Loss update
+        lr = opt.learning_rate * (0.96 ** (opt.global_step / 1000000))
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
         pos_batch, neg_batch, seg_pos_neg = batch
         pos_batch = [v.to(opt.device) for v in pos_batch]
         neg_batch = [v.to(opt.device) for v in neg_batch]
@@ -99,6 +105,9 @@ def train(model, data_loader, optimizer, averaged_model, opt):
 
         sz_b = seg_pos_neg.size(0)
         avg_training_loss.update(loss.detach(), sz_b)
+
+        opt.global_step += 1
+        wandb.log({"training_loss": loss.detach()})
 
     epoch_time = timeit.default_timer() - start_time
 
