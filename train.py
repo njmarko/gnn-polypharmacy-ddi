@@ -1,8 +1,10 @@
 import argparse
 import timeit
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn import metrics
 from torch.testing._internal.common_quantization import AverageMeter
 import torch.optim as optim
 from tqdm import tqdm
@@ -75,6 +77,19 @@ def main():
     averaged_model = model.state_dict()
     for epoch in range(opt.n_epochs):
         train_loss, epoch_time, averaged_model = train(model, train_loader, optimizer, averaged_model, opt)
+        logging.info(f"  Train loss: {train_loss}, time: {epoch_time}")
+        training_model = model.state_dict()
+
+        # Using average model for validation
+        model.load_state_dict(averaged_model)
+
+        valid_perf, val_time = validate(model, val_loader, opt)
+
+        wandb.log({"validation_performance": valid_perf})
+
+        logging.info(f"  Validation: {valid_perf['auroc']:.4f}, time: {val_time}")
+
+        model.load_state_dict(training_model)
 
 
 def train(model, data_loader, optimizer, averaged_model, opt):
@@ -117,9 +132,73 @@ def train(model, data_loader, optimizer, averaged_model, opt):
     return avg_training_loss.avg, epoch_time, averaged_model
 
 
+def validate(model, data_loader, opt):
+    model.eval()
+    score, label, seidx = [], [], []
+    start_time = timeit.default_timer()
+    with torch.no_grad():
+        for batch in tqdm(data_loader, mininterval=3, desc='Validation'):
+            *batch, batch_label = batch
+            batch = [v.to(opt.device) for v in batch]  # move to GPU if needed
+
+            batch_score = model(*batch)
+            if batch_score is None:
+                break
+
+            label += [batch_label]
+            score += [batch_score]
+            seidx += [batch[-2]]
+
+        label = np.hstack(label)
+        score = np.hstack([s.cpu() for s in score])
+        seidx = np.hstack([s.cpu() for s in seidx])
+
+        threshold = get_optimal_thresholds_for_rels(seidx, label, score)
+        instance_threshold = threshold[seidx]
+
+        pred = score > instance_threshold
+
+        performance = {
+            'auroc': metrics.roc_auc_score(label, score),
+            'avg_p': metrics.average_precision_score(label, score),
+            'f1': metrics.f1_score(label, pred, average='binary'),
+            'p': metrics.precision_score(label, pred, average='binary'),
+            'r': metrics.recall_score(label, pred, average='binary'),
+            'threshold': threshold
+        }
+        epoch_time = timeit.default_timer() - start_time
+        return performance, epoch_time
+
+
 def max_margin_loss_fn(pos_eg_score, neg_eg_score, seg_pos_neg, margin=1):
     pos_eg_score = pos_eg_score.index_select(0, seg_pos_neg)
     return torch.mean(F.relu(margin - pos_eg_score + neg_eg_score))
+
+
+# https://arxiv.org/abs/1905.005342
+def get_optimal_thresholds_for_rels(relations, goal, score, interval=0.01):
+    def get_optimal_threshold(goal, score):
+        """ Get the threshold with maximized accuracy"""
+        if (np.max(score) - np.min(score)) < interval:
+            optimal_threshold = np.max(score)
+        else:
+            thresholds = np.arange(np.min(score), np.max(score), interval).reshape(1, -1)
+            score = score.reshape(-1, 1)
+            goal = goal.reshape(-1, 1)
+            optimal_threshold_idx = np.sum((score > thresholds) == goal, 0).argmax()
+            optimal_threshold = thresholds.reshape(-1)[optimal_threshold_idx]
+        return optimal_threshold
+
+    unique_rels = np.unique(relations)
+    rel_thresholds = np.zeros(int(unique_rels.max()) + 1)
+
+    for rel_idx in unique_rels:
+        rel_mask = np.where(relations == rel_idx)
+        rel_goal = goal[rel_mask]
+        rel_score = score[rel_mask]
+        rel_thresholds[rel_idx] = get_optimal_threshold(rel_goal, rel_score)
+
+    return rel_thresholds
 
 
 if __name__ == "__main__":
