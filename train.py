@@ -4,6 +4,7 @@ import timeit
 import torch
 import torch.nn.functional as F
 from torch.testing._internal.common_quantization import AverageMeter
+import torch.optim as optim
 from tqdm import tqdm
 import wandb
 
@@ -40,6 +41,11 @@ def main():
     parser.add_argument('-device', '--device', type=str, default='cuda', help="Device to be used")
     parser.add_argument('-e', '--n_epochs', type=int, default=10000, help="Max number of epochs")
 
+    parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3)
+
+    parser.add_argument('-l2', '--l2_lambda', type=float, default=0)
+    parser.add_argument('-drop', '--dropout', type=float, default=0.1)
+
     # Directory containing precomputed training data split.
     parser.add_argument('-input_data_path', '--input_data_path', default=None,
                         help="Input data path, e.g. ./data/decagon/")
@@ -57,6 +63,9 @@ def main():
         num_atom_type=100
     ).to(opt.device)
 
+    optimizer = optim.Adam(
+        model.parameters(), lr=opt.learning_rate, weight_decay=opt.l2_lambda)
+
     wandb.init(entity=opt.entity, project=opt.project_name, group=opt.group, job_type=opt.job_type, config=opt)
 
 
@@ -64,7 +73,7 @@ def main():
     best_val = 0
     averaged_model = None
     for epoch in range(opt.n_epochs):
-        train_loss, epoch_time, averaged_model = train(model, train_loader, None, averaged_model, opt)
+        train_loss, epoch_time, averaged_model = train(model, train_loader, optimizer, averaged_model, opt)
 
 
 def train(model, data_loader, optimizer, averaged_model, opt):
