@@ -72,7 +72,7 @@ def main():
     wandb.init(entity=opt.entity, project=opt.project_name, group=opt.group, job_type=opt.job_type, config=opt)
 
     best_val = 0
-    averaged_model = None
+    averaged_model = model.state_dict()
     for epoch in range(opt.n_epochs):
         train_loss, epoch_time, averaged_model = train(model, train_loader, optimizer, averaged_model, opt)
 
@@ -106,6 +106,9 @@ def train(model, data_loader, optimizer, averaged_model, opt):
         sz_b = seg_pos_neg.size(0)
         avg_training_loss.update(loss.detach(), sz_b)
 
+        # Custom average model formula
+        for var in model.state_dict():
+            averaged_model[var] = 0.9 * averaged_model[var] + (1 - 0.9) * model.state_dict()[var]
         opt.global_step += 1
         wandb.log({"training_loss": loss.detach()})
 
