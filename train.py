@@ -8,6 +8,7 @@ from tqdm import tqdm
 import wandb
 
 from ddi_dataset import create_ddi_dataloaders
+from model.GNNModel import GraphTransformer
 
 
 def main():
@@ -36,6 +37,7 @@ def main():
     parser.add_argument('-b', '--batch_size', type=int, default=100)
 
     # Training options
+    parser.add_argument('-device', '--device', type=str, default='cuda', help="Device to be used")
     parser.add_argument('-e', '--n_epochs', type=int, default=10000, help="Max number of epochs")
 
     # Directory containing precomputed training data split.
@@ -46,15 +48,23 @@ def main():
                         help="Which fold to test on, format x/total")
 
     opt = parser.parse_args()
+    opt.device = 'cuda' if torch.cuda.is_available() and (opt.device == 'cuda') else 'cpu'
 
     train_loader, val_loader = create_ddi_dataloaders(opt)
 
+    model = GraphTransformer(
+        batch_size=opt.batch_size,
+        num_atom_type=100
+    ).to(opt.device)
+
     wandb.init(entity=opt.entity, project=opt.project_name, group=opt.group, job_type=opt.job_type, config=opt)
+
+
 
     best_val = 0
     averaged_model = None
     for epoch in range(opt.n_epochs):
-        train_loss, averaged_model = train(None, train_loader, None, averaged_model, opt)
+        train_loss, epoch_time, averaged_model = train(model, train_loader, None, averaged_model, opt)
 
 
 def train(model, data_loader, optimizer, averaged_model, opt):
