@@ -90,6 +90,20 @@ def prepare_ddi_dataloaders(opt, train_dataset, valid_dataset, graph_dict, side_
     return train_loader, valid_loader
 
 
+def prepare_ddi_testset_dataloader(positive_set, negative_set, train_opt, batch_size):
+    test_loader = torch.utils.data.DataLoader(
+        PolypharmacyDataset(
+            drug_structure_dict=train_opt.graph_dict,
+            se_idx_dict=train_opt.side_effect_idx_dict,
+            se_pos_dps=positive_set,
+            se_neg_dps=negative_set,
+            n_max_batch_se=1),
+        num_workers=2,
+        batch_size=batch_size,
+        collate_fn=collate_fun)
+    return test_loader
+
+
 def ddi_collate_paired_batch(paired_batch):
     pos_batch = []
     neg_batch = []

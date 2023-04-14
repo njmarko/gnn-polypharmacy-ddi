@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 import timeit
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from tqdm import tqdm
 import wandb
 import logging
 
-from ddi_dataset import create_ddi_dataloaders
+from ddi_dataset import create_ddi_dataloaders, prepare_ddi_testset_dataloader
 from model.GNNModel import GraphTransformer
 
 
@@ -45,7 +46,7 @@ def main():
 
     # Training options
     parser.add_argument('-device', '--device', type=str, default='cuda', help="Device to be used")
-    parser.add_argument('-e', '--n_epochs', type=int, default=10000, help="Max number of epochs")
+    parser.add_argument('-e', '--n_epochs', type=int, default=1, help="Max number of epochs")
 
     parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3)
 
@@ -59,6 +60,8 @@ def main():
 
     parser.add_argument('-f', '--fold', default='1/10', type=str,
                         help="Which fold to test on, format x/total")
+    parser.add_argument('-t', '--test_dataset_pkl', default=None)
+    parser.add_argument('-best_model_pkl', '--best_model_pkl', default=None)
 
     opt = parser.parse_args()
     opt.device = 'cuda' if torch.cuda.is_available() and (opt.device == 'cuda') else 'cpu'
@@ -94,7 +97,6 @@ def main():
     best_val = 0
     averaged_model = model.state_dict()
     best_val_auroc = -np.inf
-    best_model_path = None
     for epoch in range(opt.n_epochs):
         train_loss, epoch_time, averaged_model = train(model, train_loader, optimizer, averaged_model, opt)
         logging.info(f"  Train loss: {train_loss}, time: {epoch_time}")
@@ -111,18 +113,44 @@ def main():
 
         if val_metrics['auroc'] > best_val_auroc:
             best_val_auroc = val_metrics['auroc']
-            Path(f'experiments/{opt.group}').mkdir(exist_ok=True)
+            Path(f'experiments/{opt.group}').mkdir(parents=True, exist_ok=True)
             new_best_path = os.path.join(f'experiments/{opt.group}',
                                          f'train-{opt.group}-epoch{epoch}'
                                          f'-metric{val_metrics["auroc"]:.4f}.pt')
             torch.save({'global_step': opt.global_step,
                         'model': averaged_model,
                         'threshold': val_metrics['threshold']}, new_best_path)
-            if best_model_path:
-                os.remove(best_model_path)
-            best_model_path = new_best_path
+            if opt['best_model_pkl']:
+                os.remove(opt['best_model_pkl'])
+            opt['best_model_pkl'] = new_best_path
 
         model.load_state_dict(training_model)
+
+    folds = os.listdir(opt.test_dataset_pkl)
+    for fold_file in folds:
+        fold_path = os.path.join(opt.test_dataset_pkl, fold_file)
+        test_dataset = pickle.load(open(fold_path, 'rb'))
+        positive_data = test_dataset['pos']
+        negative_data = test_dataset['neg']
+
+        # create data loader
+        test_data = prepare_ddi_testset_dataloader(
+            positive_data, negative_data, opt, opt.batch_size)
+
+        model = GraphTransformer(
+            batch_size=opt.batch_size,
+            num_atom_type=100,
+            deg=deg
+        ).to(opt.device)
+        trained_state = torch.load(opt.best_model_pkl)
+        model.load_state_dict(trained_state['model'])
+
+        test_perf, _ = validate(model, test_data, opt)
+        wandb.log({"test_performance": test_perf})
+        print(f"performance for fold {fold_file}")
+        for k, v in test_perf.items():
+            if k != 'threshold':
+                print(k, v)
 
 
 def train(model, data_loader, optimizer, averaged_model, opt):
@@ -130,6 +158,8 @@ def train(model, data_loader, optimizer, averaged_model, opt):
     start_time = timeit.default_timer()
 
     avg_training_loss = AverageMeter("Train epoch loss avg")
+
+    # counter = 0
 
     for batch in tqdm(data_loader, mininterval=5, desc="Training"):
         optimizer.zero_grad()
@@ -160,6 +190,9 @@ def train(model, data_loader, optimizer, averaged_model, opt):
         opt.global_step += 1
         wandb.log({"training_loss": loss.detach()})
 
+        # counter += 1
+        # if counter >= 5: break
+
     epoch_time = timeit.default_timer() - start_time
 
     return avg_training_loss.avg, epoch_time, averaged_model
@@ -169,6 +202,7 @@ def validate(model, data_loader, opt):
     model.eval()
     score, label, seidx = [], [], []
     start_time = timeit.default_timer()
+
     with torch.no_grad():
         for batch in tqdm(data_loader, mininterval=3, desc='Validation'):
             *batch, batch_label = batch
