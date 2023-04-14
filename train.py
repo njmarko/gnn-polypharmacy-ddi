@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from sklearn import metrics
 from torch.testing._internal.common_quantization import AverageMeter
 import torch.optim as optim
+from torch_geometric.utils import degree
 from tqdm import tqdm
 import wandb
 import logging
@@ -65,9 +66,24 @@ def main():
 
     train_loader, val_loader = create_ddi_dataloaders(opt)
 
+    # Computing degree for PNAConv https://github.com/pyg-team/pytorch_geometric/blob/master/examples/pna.py
+    # Compute the maximum in-degree in the training data.
+    # max_degree = -1
+    # for data in train_loader.dataset:
+    #     d = degree(data.edge_index[1], num_nodes=data.num_nodes, dtype=torch.long)
+    #     max_degree = max(max_degree, int(d.max()))
+    #
+    # # Compute the in-degree histogram tensor
+    # deg = torch.zeros(max_degree + 1, dtype=torch.long)
+    # for data in train_loader.dataset:
+    #     d = degree(data.edge_index[1], num_nodes=data.num_nodes, dtype=torch.long)
+    #     deg += torch.bincount(d, minlength=deg.numel())
+    deg = torch.ones(30, dtype=torch.long)
+
     model = GraphTransformer(
         batch_size=opt.batch_size,
-        num_atom_type=100
+        num_atom_type=100,
+        deg=deg
     ).to(opt.device)
 
     optimizer = optim.Adam(

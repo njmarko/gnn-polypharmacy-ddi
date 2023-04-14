@@ -7,7 +7,7 @@ import time
 from torch import optim
 import torch.nn.functional as F
 import torch_geometric
-from torch_geometric.nn import GATConv, GATv2Conv
+from torch_geometric.nn import GATConv, GATv2Conv, PNAConv
 import torchvision
 from sklearn import metrics
 import os
@@ -18,10 +18,11 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class GraphTransformer(nn.Module):
 
-    def __init__(self, num_atom_feat=3, num_atom_type=100, batch_size=2, dim_node=32, out_dim=10, n_bond_type=20,
+    def __init__(self, deg, num_atom_feat=3, num_atom_type=100, batch_size=2, dim_node=32, out_dim=10, n_bond_type=20,
                  score_fn='trans', edge_dim=32, dropout=0.1, n_side_effects=964, dim_mlp=32, hid_dim=32, heads=4,
                  depth=2):
         super().__init__()
+        self.deg = deg
         self.batch_size = batch_size
         self.dim_node = dim_node
         self.num_atom_type = num_atom_type
@@ -68,9 +69,11 @@ class GraphTransformer(nn.Module):
         #     self.encoder_blocks.append(GATTransformerEncoder(dim=self.dim_node, dim_edge=self.edge_dim,
         #                                                      dim_mlp=self.dim_mlp,dropout=self.dropout,
         #                                                      heads=self.heads))
-        self.gat_transformer = GATTransformerEncoder(dim=self.dim_node, dim_edge=self.edge_dim,
-                                                       dim_mlp=self.dim_mlp, dropout=0,
-                                                       heads=self.heads)
+        # self.gat_transformer = GATTransformerEncoder(dim=self.dim_node, dim_edge=self.edge_dim,
+        #                                              dim_mlp=self.dim_mlp, dropout=0,
+        #                                              heads=self.heads)
+        self.pna_transformer = PNATransformerEncoder(dim=self.dim_node, dim_mlp=dim_mlp, dim_edge=self.edge_dim,
+                                                     dropout=0, deg=self.deg)
 
     @property
     def score_fn(self):
@@ -115,7 +118,6 @@ class GraphTransformer(nn.Module):
         adj_list = torch.vstack((a, b))
 
         # x = self.atom_comp(atom_feat1, atom_type1)
-        # TODO: Number of CLS Nodes should be number of the segmentation mask unique values
         cls_nodes = torch.randn(seg.unique().shape[0], 3, device='cuda:0')
         cls_types = torch.repeat_interleave(torch.tensor([self.num_atom_type], dtype=torch.int64, device='cuda:0'),
                                             seg.unique().shape[0])
@@ -132,7 +134,7 @@ class GraphTransformer(nn.Module):
 
         data = (x, adj_list, emb_edges)
         # data = (x, adj_list)
-        res = self.gat_transformer(data)
+        res = self.pna_transformer(data)
 
         # res = None
         # for enc_block in self.encoder_blocks:
@@ -224,18 +226,42 @@ class GATTransformerEncoder(nn.Module):
                 ResidualConnection(
                     PreLayerNorm(dim, GraphEncoderMLP(in_dim=dim, hid_dim=dim_mlp, out_dim=dim, dropout=dropout)))
             ]))
-        # self.encoder_attention = ResidualConnection(
-        #     PreLayerNorm(dim, PostAttentionMultiHeadProjection(dim=dim, heads=heads,
-        #                                                        fn=GATv2Conv(in_channels=dim, out_channels=dim,
-        #                                                                     heads=heads, add_self_loops=False,
-        #                                                                     edge_dim=dim_edge, dropout=dropout))))
-        # self.encoder_mlp = ResidualConnection(
-        #     PreLayerNorm(dim, GraphEncoderMLP(in_dim=dim, hid_dim=dim_mlp, out_dim=dim, dropout=dropout)))
 
     def forward(self, data):
         x, edge_index, edge_attr = data
-        # x = self.encoder_attention(x=x, edge_index=edge_index, edge_attr=edge_attr)
-        # x = self.encoder_mlp(x=x)
+        for att, ff in self.layers:
+            x = att(x=x, edge_index=edge_index, edge_attr=edge_attr)
+            x = ff(x=x)
+        return x
+
+
+class PNATransformerEncoder(nn.Module):
+
+    def __init__(self, dim, dim_edge, dropout, dim_mlp, deg, aggregators=None, scalers=None, towers=4, depth=4,
+                 divide_input=False, pre_layers=1, post_layers=1):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        self.aggregators = aggregators or ['mean', 'min', 'max', 'std']
+        self.scalers = scalers or ['identity', 'amplification', 'attenuation']
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                ResidualConnection(
+                    PreLayerNorm(dim, PNAConv(in_channels=dim, out_channels=dim,
+                                              aggregators=self.aggregators,
+                                              scalers=self.scalers,
+                                              towers=towers,
+                                              edge_dim=dim_edge,
+                                              dropout=dropout,
+                                              deg=deg,
+                                              divide_input=divide_input,
+                                              pre_layers=pre_layers,
+                                              post_layers=post_layers))),
+                ResidualConnection(
+                    PreLayerNorm(dim, GraphEncoderMLP(in_dim=dim, hid_dim=dim_mlp, out_dim=dim, dropout=dropout)))
+            ]))
+
+    def forward(self, data):
+        x, edge_index, edge_attr = data
         for att, ff in self.layers:
             x = att(x=x, edge_index=edge_index, edge_attr=edge_attr)
             x = ff(x=x)
