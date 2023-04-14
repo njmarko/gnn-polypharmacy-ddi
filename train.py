@@ -46,7 +46,7 @@ def main():
 
     # Training options
     parser.add_argument('-device', '--device', type=str, default='cuda', help="Device to be used")
-    parser.add_argument('-e', '--n_epochs', type=int, default=1, help="Max number of epochs")
+    parser.add_argument('-e', '--n_epochs', type=int, default=2, help="Max number of epochs")
 
     parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3)
 
@@ -60,12 +60,18 @@ def main():
 
     parser.add_argument('-f', '--fold', default='1/10', type=str,
                         help="Which fold to test on, format x/total")
-    parser.add_argument('-t', '--test_dataset_pkl', default=None)
+    parser.add_argument('-t', '--test_dataset_pkl', default='./data/decagon/folds')
     parser.add_argument('-best_model_pkl', '--best_model_pkl', default=None)
 
     opt = parser.parse_args()
     opt.device = 'cuda' if torch.cuda.is_available() and (opt.device == 'cuda') else 'cpu'
     print(opt.device)
+
+    data_opt = np.load(open(opt.input_data_path + "input_data.npy", 'rb'), allow_pickle=True).item()
+    opt.n_atom_type = data_opt.n_atom_type
+    opt.n_bond_type = data_opt.n_bond_type
+    opt.graph_dict = data_opt.graph_dict
+    opt.side_effect_idx_dict = data_opt.side_effect_idx_dict
 
     train_loader, val_loader = create_ddi_dataloaders(opt)
 
@@ -94,7 +100,6 @@ def main():
 
     wandb.init(entity=opt.entity, project=opt.project_name, group=opt.group, job_type=opt.job_type, config=opt)
 
-    best_val = 0
     averaged_model = model.state_dict()
     best_val_auroc = -np.inf
     for epoch in range(opt.n_epochs):
@@ -120,9 +125,9 @@ def main():
             torch.save({'global_step': opt.global_step,
                         'model': averaged_model,
                         'threshold': val_metrics['threshold']}, new_best_path)
-            if opt['best_model_pkl']:
-                os.remove(opt['best_model_pkl'])
-            opt['best_model_pkl'] = new_best_path
+            if opt.best_model_pkl:
+                os.remove(opt.best_model_pkl)
+            opt.best_model_pkl = new_best_path
 
         model.load_state_dict(training_model)
 
