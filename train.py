@@ -46,7 +46,7 @@ def main():
 
     # Training options
     parser.add_argument('-device', '--device', type=str, default='cuda', help="Device to be used")
-    parser.add_argument('-e', '--n_epochs', type=int, default=2, help="Max number of epochs")
+    parser.add_argument('-e', '--n_epochs', type=int, default=1, help="Max number of epochs")
 
     parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3)
 
@@ -62,6 +62,8 @@ def main():
                         help="Which fold to test on, format x/total")
     parser.add_argument('-t', '--test_dataset_pkl', default='./data/decagon/folds')
     parser.add_argument('-best_model_pkl', '--best_model_pkl', default=None)
+    parser.add_argument('-resume_model_pkl', '--resume_model_pkl',
+                        default=None)
 
     opt = parser.parse_args()
     opt.device = 'cuda' if torch.cuda.is_available() and (opt.device == 'cuda') else 'cpu'
@@ -94,6 +96,11 @@ def main():
         num_atom_type=100,
         deg=deg
     ).to(opt.device)
+
+    if opt.resume_model_pkl:
+        logging.info(f"Resuming training with model {opt.resume_model_pkl}")
+        trained_state = torch.load(opt.resume_model_pkl)
+        model.load_state_dict(trained_state['model'])
 
     optimizer = optim.Adam(
         model.parameters(), lr=opt.learning_rate, weight_decay=opt.l2_lambda)
