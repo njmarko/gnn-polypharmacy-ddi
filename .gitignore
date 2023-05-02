@@ -136,6 +136,6 @@ dmypy.json
 # This project
 /wandb/
 /.idea/
-/data/decagon/
+/data/decagon*
 **/decagon/*
 /experiments/*
