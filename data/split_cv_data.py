@@ -7,6 +7,8 @@
 """
 
 import argparse
+import os
+
 import numpy as np
 import csv
 import random
@@ -222,7 +224,7 @@ def main():
         opt.path = './data/'
     else:
         opt.path = opt.path[0]
-
+    os.makedirs(opt.path + "decagon/folds/", exist_ok=True)
     if "qm9" in opt.dataset:
         opt.path = opt.path + "qm9/dsgdb9nsd/"
         opt = prepare_qm9_cv(opt)
@@ -230,6 +232,7 @@ def main():
     if "decagon" in opt.dataset:
         opt.path = opt.path + "decagon/"
         opt = prepare_decagon_cv(opt)
+
 
     print('Dump to file:', opt.path + opt.output_npy)
     np.save(opt.path + opt.output_npy, opt)
